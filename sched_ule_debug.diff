@@ -1,0 +1,189 @@
+--- sys/kern/sched_ule.c	2015-02-18 11:50:13.090410726 -0800
++++ sys/kern/sched_debug.c	2015-02-18 13:15:48.621407020 -0800
+@@ -1,4 +1,12 @@
+ /*-
++ * Copyright (c) 2015, Harrison Grundy <harrison.grundy@astrodoggroup.com>
++ * Based entirely on sched_ule.c from Jeffrey Roberson. Any mistakes are
++ * likely to be mine. This scheduler is supposed to create edge cases in
++ * scheduling. As a result, it may destroy your data, render your machine
++ * unbootable and corrupt data on any device attached to it.
++ */
++
++/*-
+  * Copyright (c) 2002-2007, Jeffrey Roberson <jeff@freebsd.org>
+  * All rights reserved.
+  *
+@@ -25,20 +33,14 @@
+  */
+ 
+ /*
+- * This file implements the ULE scheduler.  ULE supports independent CPU
+- * run queues and fine grain locking.  It has superior interactive
+- * performance under load even on uni-processor systems.
+- *
+- * etymology:
+- *   ULE is the last three letters in schedule.  It owes its name to a
+- * generic user created for a scheduling system by Paul Mikesell at
+- * Isilon Systems and a general lack of creativity on the part of the author.
++ * This file implements the debugging scheduler. It's designed to break 
++ * things. Beware.
+  */
+ 
+ #include <sys/cdefs.h>
+-__FBSDID("$FreeBSD: head/sys/kern/sched_ule.c 273266 2014-10-18 19:36:11Z adrian $");
+ 
+ #include "opt_hwpmc_hooks.h"
++#include "opt_kdtrace.h"
+ #include "opt_sched.h"
+ 
+ #include <sys/param.h>
+@@ -46,7 +48,6 @@
+ #include <sys/kdb.h>
+ #include <sys/kernel.h>
+ #include <sys/ktr.h>
+-#include <sys/limits.h>
+ #include <sys/lock.h>
+ #include <sys/mutex.h>
+ #include <sys/proc.h>
+@@ -63,6 +64,7 @@
+ #include <sys/vmmeter.h>
+ #include <sys/cpuset.h>
+ #include <sys/sbuf.h>
++#include <sys/limits.h>
+ 
+ #ifdef HWPMC_HOOKS
+ #include <sys/pmckern.h>
+@@ -191,6 +193,12 @@
+ #define	SCHED_SLICE_DEFAULT_DIVISOR	10	/* ~94 ms, 12 stathz ticks. */
+ #define	SCHED_SLICE_MIN_DIVISOR		6	/* DEFAULT/MIN = ~16 ms. */
+ 
++static int sched_slice_minticks = SCHED_SLICE_MIN_DIVISOR;
++static int sched_slice_maxticks = SCHED_SLICE_DEFAULT_DIVISOR;
++static int sched_priority_random = 0;
++static int sched_alg = 0; /* Use ULE standard algorithm by default */
++
++
+ /* Flags kept in td_flags. */
+ #define	TDF_SLICEEND	TDF_SCHED2	/* Thread time slice is over. */
+ 
+@@ -578,11 +586,11 @@
+ 	 * cannot be higher priority load in the system.
+ 	 */
+ 	load = tdq->tdq_sysload - 1;
+-	if (load >= SCHED_SLICE_MIN_DIVISOR)
+-		return (sched_slice_min);
++	if (load >= sched_slice_minticks)
++		return (sched_slice_minticks);
+ 	if (load <= 1)
+-		return (sched_slice);
+-	return (sched_slice / load);
++		return (sched_slice_maxticks);
++	return (sched_slice_maxticks / load);
+ }
+ 
+ /*
+@@ -1039,8 +1047,8 @@
+ 		return;
+ 
+ 	/*
+-	 * Make sure that our caller's earlier update to tdq_load is
+-	 * globally visible before we read tdq_cpu_idle.  Idle thread
++	 * Make sure that tdq_load updated before calling this function
++	 * is globally visible before we read tdq_cpu_idle.  Idle thread
+ 	 * accesses both of them without locks, and the order is important.
+ 	 */
+ 	mb();
+@@ -1079,16 +1087,16 @@
+ 			continue;
+ 		if (bit == 0)
+ 			bit = RQB_FFS(rqb->rqb_bits[i]);
+-		for (; bit < RQB_BPW; bit++) {
++		for (; bit < RBQ_BPW; bit++) {
+ 			if ((rqb->rqb_bits[i] & (1ul << bit)) == 0)
+ 				continue;
+ 			rqh = &rq->rq_queues[bit + (i << RQB_L2BPW)];
+ 			TAILQ_FOREACH(td, rqh, td_runq) {
+-				if (first && THREAD_CAN_MIGRATE(td) &&
++				if (first && THREAD_CAN_MIGRATE(td) && 
+ 				    THREAD_CAN_SCHED(td, cpu))
+ 					return (td);
+ 				first = td;
+-			}
++			}	
+ 		}
+ 	}
+ 	if (start != 0) {
+@@ -1499,6 +1507,9 @@
+ 	 * considered interactive.
+ 	 */
+ 	score = imax(0, sched_interact_score(td) + td->td_proc->p_nice);
++	if (sched_priority_random > 0) 
++		score = score + ((random() % (sched_priority_random*2)) - sched_priority_random);	
++
+ 	if (score < sched_interact) {
+ 		pri = PRI_MIN_INTERACT;
+ 		pri += ((PRI_MAX_INTERACT - PRI_MIN_INTERACT + 1) /
+@@ -2392,13 +2403,35 @@
+ 	 * Pick the destination cpu and if it isn't ours transfer to the
+ 	 * target cpu.
+ 	 */
+-	cpu = sched_pickcpu(td, flags);
+-	tdq = sched_setcpu(td, cpu, flags);
+-	tdq_add(tdq, td, flags);
+-	if (cpu != PCPU_GET(cpuid)) {
+-		tdq_notify(tdq, td);
+-		return;
+-	}
++	switch (sched_alg) {
++	case 0:	
++		cpu = sched_pickcpu(td, flags);
++		tdq = sched_setcpu(td, cpu, flags);
++		tdq_add(tdq, td, flags);
++		if (cpu != PCPU_GET(cpuid)) {
++			tdq_notify(tdq, td);
++			return;
++		}
++		break;	
++	case 1: 
++		cpu = random() % mp_maxid;
++	 	tdq = sched_setcpu(td, cpu, flags);
++		tdq_add(tdq, td, flags);
++		if (cpu != PCPU_GET(cpuid)) {
++			tdq_notify(tdq, td);
++			return;
++		}	
++		break;
++	default: 
++                cpu = sched_pickcpu(td, flags);
++                tdq = sched_setcpu(td, cpu, flags);
++                tdq_add(tdq, td, flags);
++                if (cpu != PCPU_GET(cpuid)) {
++                        tdq_notify(tdq, td);
++                        return;
++                }
++                break;
++	}	
+ #else
+ 	tdq = TDQ_SELF();
+ 	TDQ_LOCK(tdq);
+@@ -2852,7 +2885,7 @@
+ }
+ 
+ SYSCTL_NODE(_kern, OID_AUTO, sched, CTLFLAG_RW, 0, "Scheduler");
+-SYSCTL_STRING(_kern_sched, OID_AUTO, name, CTLFLAG_RD, "ULE", 0,
++SYSCTL_STRING(_kern_sched, OID_AUTO, name, CTLFLAG_RD, "DEBUG", 0,
+     "Scheduler name");
+ SYSCTL_PROC(_kern_sched, OID_AUTO, quantum, CTLTYPE_INT | CTLFLAG_RW,
+     NULL, 0, sysctl_kern_quantum, "I",
+@@ -2871,6 +2904,11 @@
+ SYSCTL_INT(_kern_sched, OID_AUTO, idlespinthresh, CTLFLAG_RW,
+     &sched_idlespinthresh, 0,
+     "Threshold before we will permit idle thread spinning");
++SYSCTL_INT(_kern_sched, OID_AUTO, maxslice, CTLFLAG_RW,
++    &sched_slice_maxticks, 0, "Max Slice Size in Ticks");
++SYSCTL_INT(_kern_sched, OID_AUTO, minslice, CTLFLAG_RW, &sched_slice_minticks, 0, "Min Slice Size in Ticks");
++SYSCTL_INT(_kern_sched, OID_AUTO, priority_random, CTLFLAG_RW, &sched_priority_random, 0, "Thread Priority Randomizer");
++SYSCTL_INT(_kern_sched, OID_AUTO, algorithm, CTLFLAG_RW, &sched_alg, 0, "Scheduler Algorithm Selector");
+ #ifdef SMP
+ SYSCTL_INT(_kern_sched, OID_AUTO, affinity, CTLFLAG_RW, &affinity, 0,
+     "Number of hz ticks to keep thread affinity for");
