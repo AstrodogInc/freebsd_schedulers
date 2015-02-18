@@ -1087,7 +1087,7 @@ again:
 			continue;
 		if (bit == 0)
 			bit = RQB_FFS(rqb->rqb_bits[i]);
-		for (; bit < RBQ_BPW; bit++) {
+		for (; bit < RQB_BPW; bit++) {
 			if ((rqb->rqb_bits[i] & (1ul << bit)) == 0)
 				continue;
 			rqh = &rq->rq_queues[bit + (i << RQB_L2BPW)];
