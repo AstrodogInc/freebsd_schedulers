@@ -1,5 +1,5 @@
---- sys/kern/sched_ule.c	2015-02-18 11:50:13.090410726 -0800
-+++ sys/kern/sched_debug.c	2015-02-18 13:15:48.621407020 -0800
+--- sys/kern/sched_ule.c	2015-02-19 07:59:27.626127250 -0800
++++ sys/kern/sched_debug.c	2015-02-19 12:50:02.426836278 -0800
 @@ -1,4 +1,12 @@
  /*-
 + * Copyright (c) 2015, Harrison Grundy <harrison.grundy@astrodoggroup.com>
@@ -57,8 +57,8 @@
  #define	SCHED_SLICE_DEFAULT_DIVISOR	10	/* ~94 ms, 12 stathz ticks. */
  #define	SCHED_SLICE_MIN_DIVISOR		6	/* DEFAULT/MIN = ~16 ms. */
  
-+static int sched_slice_minticks = SCHED_SLICE_MIN_DIVISOR;
-+static int sched_slice_maxticks = SCHED_SLICE_DEFAULT_DIVISOR;
++static int sched_slice_minticks = 2;
++static int sched_slice_maxticks = 12;
 +static int sched_priority_random = 0;
 +static int sched_alg = 0; /* Use ULE standard algorithm by default */
 +
@@ -82,7 +82,25 @@
  }
  
  /*
-@@ -1039,8 +1047,8 @@
+@@ -861,14 +869,15 @@
+ {
+ 	struct tdq *tdq;
+ 
++	if (smp_started == 0 || rebalance == 0)
++		return;	
+ 	/*
+ 	 * Select a random time between .5 * balance_interval and
+ 	 * 1.5 * balance_interval.
+ 	 */
++	
+ 	balance_ticks = max(balance_interval / 2, 1);
+ 	balance_ticks += random() % balance_interval;
+-	if (smp_started == 0 || rebalance == 0)
+-		return;
+ 	tdq = TDQ_SELF();
+ 	TDQ_UNLOCK(tdq);
+ 	sched_balance_group(cpu_top);
+@@ -1039,8 +1048,8 @@
  		return;
  
  	/*
@@ -93,13 +111,7 @@
  	 * accesses both of them without locks, and the order is important.
  	 */
  	mb();
-@@ -1079,16 +1087,16 @@
- 			continue;
- 		if (bit == 0)
- 			bit = RQB_FFS(rqb->rqb_bits[i]);
--		for (; bit < RBQ_BPW; bit++) {
-+		for (; bit < RBQ_BPW; bit++) {
- 			if ((rqb->rqb_bits[i] & (1ul << bit)) == 0)
+@@ -1084,11 +1093,11 @@
  				continue;
  			rqh = &rq->rq_queues[bit + (i << RQB_L2BPW)];
  			TAILQ_FOREACH(td, rqh, td_runq) {
@@ -113,7 +125,7 @@
  		}
  	}
  	if (start != 0) {
-@@ -1499,6 +1507,9 @@
+@@ -1499,6 +1508,9 @@
  	 * considered interactive.
  	 */
  	score = imax(0, sched_interact_score(td) + td->td_proc->p_nice);
@@ -123,7 +135,7 @@
  	if (score < sched_interact) {
  		pri = PRI_MIN_INTERACT;
  		pri += ((PRI_MAX_INTERACT - PRI_MIN_INTERACT + 1) /
-@@ -2392,13 +2403,35 @@
+@@ -2392,13 +2404,35 @@
  	 * Pick the destination cpu and if it isn't ours transfer to the
  	 * target cpu.
  	 */
@@ -166,7 +178,36 @@
  #else
  	tdq = TDQ_SELF();
  	TDQ_LOCK(tdq);
-@@ -2852,7 +2885,7 @@
+@@ -2510,20 +2544,16 @@
+ 	ts = td->td_sched;
+ 	if (ts->ts_flags & TSF_BOUND)
+ 		sched_unbind(td);
+-	if (PCPU_GET(cpuid) == cpu) {
+-		ts->ts_flags |= TSF_BOUND;	
+-		sched_pin();
++	KASSERT(THREAD_CAN_MIGRATE(td), ("%p must be migratable", td));
++	ts->ts_flags |= TSF_BOUND;
++	sched_pin();
++	if (PCPU_GET(cpuid) == cpu)
+ 		return;
+-	}
+-	else {	
+-		KASSERT(THREAD_CAN_MIGRATE(td), ("%p must be migratable", td));
+-		ts->ts_flags |= TSF_BOUND;
+-		sched_pin();
+-		ts->ts_cpu = cpu;
+-		/* When we return from mi_switch we'll be on the correct cpu. */
+-		mi_switch(SW_VOL, NULL);
+-	}
++	ts->ts_cpu = cpu;
++	/* When we return from mi_switch we'll be on the correct cpu. */
++	mi_switch(SW_VOL, NULL);
+ }
++
+ /*
+  * Release a bound thread.
+  */
+@@ -2856,7 +2886,7 @@
  }
  
  SYSCTL_NODE(_kern, OID_AUTO, sched, CTLFLAG_RW, 0, "Scheduler");
@@ -175,7 +216,7 @@
      "Scheduler name");
  SYSCTL_PROC(_kern_sched, OID_AUTO, quantum, CTLTYPE_INT | CTLFLAG_RW,
      NULL, 0, sysctl_kern_quantum, "I",
-@@ -2871,6 +2904,11 @@
+@@ -2875,6 +2905,11 @@
  SYSCTL_INT(_kern_sched, OID_AUTO, idlespinthresh, CTLFLAG_RW,
      &sched_idlespinthresh, 0,
      "Threshold before we will permit idle thread spinning");

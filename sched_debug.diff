@@ -40,7 +40,7 @@ Index: sys/kern/sched_debug.c
 ===================================================================
 --- sys/kern/sched_debug.c	(revision 0)
 +++ sys/kern/sched_debug.c	(working copy)
-@@ -0,0 +1,2931 @@
+@@ -0,0 +1,2932 @@
 +/*-
 + * Copyright (c) 2015, Harrison Grundy <harrison.grundy@astrodoggroup.com>
 + * Based entirely on sched_ule.c from Jeffrey Roberson. Any mistakes are
@@ -236,8 +236,8 @@ Index: sys/kern/sched_debug.c
 +#define	SCHED_SLICE_DEFAULT_DIVISOR	10	/* ~94 ms, 12 stathz ticks. */
 +#define	SCHED_SLICE_MIN_DIVISOR		6	/* DEFAULT/MIN = ~16 ms. */
 +
-+static int sched_slice_minticks = SCHED_SLICE_MIN_DIVISOR;
-+static int sched_slice_maxticks = SCHED_SLICE_DEFAULT_DIVISOR;
++static int sched_slice_minticks = 2;
++static int sched_slice_maxticks = 12;
 +static int sched_priority_random = 0;
 +static int sched_alg = 0; /* Use ULE standard algorithm by default */
 +
@@ -912,14 +912,15 @@ Index: sys/kern/sched_debug.c
 +{
 +	struct tdq *tdq;
 +
++	if (smp_started == 0 || rebalance == 0)
++		return;	
 +	/*
 +	 * Select a random time between .5 * balance_interval and
 +	 * 1.5 * balance_interval.
 +	 */
++	
 +	balance_ticks = max(balance_interval / 2, 1);
 +	balance_ticks += random() % balance_interval;
-+	if (smp_started == 0 || rebalance == 0)
-+		return;
 +	tdq = TDQ_SELF();
 +	TDQ_UNLOCK(tdq);
 +	sched_balance_group(cpu_top);
@@ -2987,3 +2988,36 @@ Added: svn:mime-type
 ## -0,0 +1 ##
 +text/plain
 \ No newline at end of property
+Index: sys/kern/sched_ule.c
+===================================================================
+--- sys/kern/sched_ule.c	(revision 278968)
++++ sys/kern/sched_ule.c	(working copy)
+@@ -2510,16 +2510,20 @@
+ 	ts = td->td_sched;
+ 	if (ts->ts_flags & TSF_BOUND)
+ 		sched_unbind(td);
+-	KASSERT(THREAD_CAN_MIGRATE(td), ("%p must be migratable", td));
+-	ts->ts_flags |= TSF_BOUND;
+-	sched_pin();
+-	if (PCPU_GET(cpuid) == cpu)
++	if (PCPU_GET(cpuid) == cpu) {
++		ts->ts_flags |= TSF_BOUND;	
++		sched_pin();
+ 		return;
+-	ts->ts_cpu = cpu;
+-	/* When we return from mi_switch we'll be on the correct cpu. */
+-	mi_switch(SW_VOL, NULL);
++	}
++	else {	
++		KASSERT(THREAD_CAN_MIGRATE(td), ("%p must be migratable", td));
++		ts->ts_flags |= TSF_BOUND;
++		sched_pin();
++		ts->ts_cpu = cpu;
++		/* When we return from mi_switch we'll be on the correct cpu. */
++		mi_switch(SW_VOL, NULL);
++	}
+ }
+-
+ /*
+  * Release a bound thread.
+  */

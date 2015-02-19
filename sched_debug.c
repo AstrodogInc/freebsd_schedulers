@@ -193,8 +193,8 @@ static struct td_sched td_sched0;
 #define	SCHED_SLICE_DEFAULT_DIVISOR	10	/* ~94 ms, 12 stathz ticks. */
 #define	SCHED_SLICE_MIN_DIVISOR		6	/* DEFAULT/MIN = ~16 ms. */
 
-static int sched_slice_minticks = SCHED_SLICE_MIN_DIVISOR;
-static int sched_slice_maxticks = SCHED_SLICE_DEFAULT_DIVISOR;
+static int sched_slice_minticks = 2;
+static int sched_slice_maxticks = 12;
 static int sched_priority_random = 0;
 static int sched_alg = 0; /* Use ULE standard algorithm by default */
 
@@ -869,14 +869,15 @@ sched_balance(void)
 {
 	struct tdq *tdq;
 
+	if (smp_started == 0 || rebalance == 0)
+		return;	
 	/*
 	 * Select a random time between .5 * balance_interval and
 	 * 1.5 * balance_interval.
 	 */
+	
 	balance_ticks = max(balance_interval / 2, 1);
 	balance_ticks += random() % balance_interval;
-	if (smp_started == 0 || rebalance == 0)
-		return;
 	tdq = TDQ_SELF();
 	TDQ_UNLOCK(tdq);
 	sched_balance_group(cpu_top);
