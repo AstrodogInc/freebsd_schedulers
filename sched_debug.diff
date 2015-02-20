@@ -1,7 +1,7 @@
-Index: sys/amd64/amd64/cpu_switch.S
+Index: amd64/amd64/cpu_switch.S
 ===================================================================
---- sys/amd64/amd64/cpu_switch.S	(revision 278968)
-+++ sys/amd64/amd64/cpu_switch.S	(working copy)
+--- amd64/amd64/cpu_switch.S	(revision 278968)
++++ amd64/amd64/cpu_switch.S	(working copy)
 @@ -51,7 +51,7 @@
  #define LK
  #endif
@@ -11,10 +11,10 @@ Index: sys/amd64/amd64/cpu_switch.S
  #define	SETLK	xchgq
  #else
  #define	SETLK	movq
-Index: sys/conf/files
+Index: conf/files
 ===================================================================
---- sys/conf/files	(revision 278968)
-+++ sys/conf/files	(working copy)
+--- conf/files	(revision 278968)
++++ conf/files	(working copy)
 @@ -3028,6 +3028,7 @@
  kern/posix4_mib.c		standard
  kern/sched_4bsd.c		optional sched_4bsd
@@ -23,10 +23,10 @@ Index: sys/conf/files
  kern/serdev_if.m		standard
  kern/stack_protector.c		standard \
  	compile-with "${NORMAL_C:N-fstack-protector*}"
-Index: sys/conf/options
+Index: conf/options
 ===================================================================
---- sys/conf/options	(revision 278968)
-+++ sys/conf/options	(working copy)
+--- conf/options	(revision 278968)
++++ conf/options	(working copy)
 @@ -181,6 +181,8 @@
  SCHED_4BSD	opt_sched.h
  SCHED_STATS	opt_sched.h
@@ -36,11 +36,11 @@ Index: sys/conf/options
  SLEEPQUEUE_PROFILING
  SLHCI_DEBUG	opt_slhci.h
  SPX_HACK
-Index: sys/kern/sched_debug.c
+Index: kern/sched_debug.c
 ===================================================================
---- sys/kern/sched_debug.c	(revision 0)
-+++ sys/kern/sched_debug.c	(working copy)
-@@ -0,0 +1,2932 @@
+--- kern/sched_debug.c	(revision 0)
++++ kern/sched_debug.c	(working copy)
+@@ -0,0 +1,2937 @@
 +/*-
 + * Copyright (c) 2015, Harrison Grundy <harrison.grundy@astrodoggroup.com>
 + * Based entirely on sched_ule.c from Jeffrey Roberson. Any mistakes are
@@ -240,6 +240,9 @@ Index: sys/kern/sched_debug.c
 +static int sched_slice_maxticks = 12;
 +static int sched_priority_random = 0;
 +static int sched_alg = 0; /* Use ULE standard algorithm by default */
++static int sched_utilticks = 10000; /* Time for CPU Usage Averaging */
++static int sched_utilticksmax = 11000;
++
 +
 +
 +/* Flags kept in td_flags. */
@@ -1684,13 +1687,13 @@ Index: sys/kern/sched_debug.c
 +{
 +	int t = ticks;
 +
-+	if (t - ts->ts_ltick >= SCHED_TICK_TARG) {
++	if (t - ts->ts_ltick >= sched_utilticks) {
 +		ts->ts_ticks = 0;
-+		ts->ts_ftick = t - SCHED_TICK_TARG;
-+	} else if (t - ts->ts_ftick >= SCHED_TICK_MAX) {
++		ts->ts_ftick = t - sched_utilticks;
++	} else if (t - ts->ts_ftick >= sched_utilticksmax) {
 +		ts->ts_ticks = (ts->ts_ticks / (ts->ts_ltick - ts->ts_ftick)) *
-+		    (ts->ts_ltick - (t - SCHED_TICK_TARG));
-+		ts->ts_ftick = t - SCHED_TICK_TARG;
++		    (ts->ts_ltick - (t - sched_utilticks));
++		ts->ts_ftick = t - sched_utilticks;
 +	}
 +	if (run)
 +		ts->ts_ticks += (t - ts->ts_ltick) << SCHED_TICK_SHIFT;
@@ -2953,6 +2956,8 @@ Index: sys/kern/sched_debug.c
 +SYSCTL_INT(_kern_sched, OID_AUTO, minslice, CTLFLAG_RW, &sched_slice_minticks, 0, "Min Slice Size in Ticks");
 +SYSCTL_INT(_kern_sched, OID_AUTO, priority_random, CTLFLAG_RW, &sched_priority_random, 0, "Thread Priority Randomizer");
 +SYSCTL_INT(_kern_sched, OID_AUTO, algorithm, CTLFLAG_RW, &sched_alg, 0, "Scheduler Algorithm Selector");
++SYSCTL_INT(_kern_sched, OID_AUTO, utilticks, CTLFLAG_RW, &sched_utilticks, 0, "CPU Usage Calculation Interval in ticks"); 
++SYSCTL_INT(_kern_sched, OID_AUTO, utilticksmax, CTLFLAG_RW, &sched_utilticksmax, 0, "CPU Usage Maximum Calculation Interval in ticks");
 +#ifdef SMP
 +SYSCTL_INT(_kern_sched, OID_AUTO, affinity, CTLFLAG_RW, &affinity, 0,
 +    "Number of hz ticks to keep thread affinity for");
@@ -2974,7 +2979,7 @@ Index: sys/kern/sched_debug.c
 +static int ccpu = 0;
 +SYSCTL_INT(_kern, OID_AUTO, ccpu, CTLFLAG_RD, &ccpu, 0, "");
 
-Property changes on: sys/kern/sched_debug.c
+Property changes on: kern/sched_debug.c
 ___________________________________________________________________
 Added: svn:eol-style
 ## -0,0 +1 ##
@@ -2988,10 +2993,10 @@ Added: svn:mime-type
 ## -0,0 +1 ##
 +text/plain
 \ No newline at end of property
-Index: sys/kern/sched_ule.c
+Index: kern/sched_ule.c
 ===================================================================
---- sys/kern/sched_ule.c	(revision 278968)
-+++ sys/kern/sched_ule.c	(working copy)
+--- kern/sched_ule.c	(revision 278968)
++++ kern/sched_ule.c	(working copy)
 @@ -2510,16 +2510,20 @@
  	ts = td->td_sched;
  	if (ts->ts_flags & TSF_BOUND)
