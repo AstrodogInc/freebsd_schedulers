@@ -197,6 +197,9 @@ static int sched_slice_minticks = 2;
 static int sched_slice_maxticks = 12;
 static int sched_priority_random = 0;
 static int sched_alg = 0; /* Use ULE standard algorithm by default */
+static int sched_utilticks = 10000; /* Time for CPU Usage Averaging */
+static int sched_utilticksmax = 11000;
+
 
 
 /* Flags kept in td_flags. */
@@ -1641,13 +1644,13 @@ sched_pctcpu_update(struct td_sched *ts, int run)
 {
 	int t = ticks;
 
-	if (t - ts->ts_ltick >= SCHED_TICK_TARG) {
+	if (t - ts->ts_ltick >= sched_utilticks) {
 		ts->ts_ticks = 0;
-		ts->ts_ftick = t - SCHED_TICK_TARG;
-	} else if (t - ts->ts_ftick >= SCHED_TICK_MAX) {
+		ts->ts_ftick = t - sched_utilticks;
+	} else if (t - ts->ts_ftick >= sched_utilticksmax) {
 		ts->ts_ticks = (ts->ts_ticks / (ts->ts_ltick - ts->ts_ftick)) *
-		    (ts->ts_ltick - (t - SCHED_TICK_TARG));
-		ts->ts_ftick = t - SCHED_TICK_TARG;
+		    (ts->ts_ltick - (t - sched_utilticks));
+		ts->ts_ftick = t - sched_utilticks;
 	}
 	if (run)
 		ts->ts_ticks += (t - ts->ts_ltick) << SCHED_TICK_SHIFT;
@@ -2910,6 +2913,8 @@ SYSCTL_INT(_kern_sched, OID_AUTO, maxslice, CTLFLAG_RW,
 SYSCTL_INT(_kern_sched, OID_AUTO, minslice, CTLFLAG_RW, &sched_slice_minticks, 0, "Min Slice Size in Ticks");
 SYSCTL_INT(_kern_sched, OID_AUTO, priority_random, CTLFLAG_RW, &sched_priority_random, 0, "Thread Priority Randomizer");
 SYSCTL_INT(_kern_sched, OID_AUTO, algorithm, CTLFLAG_RW, &sched_alg, 0, "Scheduler Algorithm Selector");
+SYSCTL_INT(_kern_sched, OID_AUTO, utilticks, CTLFLAG_RW, &sched_utilticks, 0, "CPU Usage Calculation Interval in ticks"); 
+SYSCTL_INT(_kern_sched, OID_AUTO, utilticksmax, CTLFLAG_RW, &sched_utilticksmax, 0, "CPU Usage Maximum Calculation Interval in ticks");
 #ifdef SMP
 SYSCTL_INT(_kern_sched, OID_AUTO, affinity, CTLFLAG_RW, &affinity, 0,
     "Number of hz ticks to keep thread affinity for");
