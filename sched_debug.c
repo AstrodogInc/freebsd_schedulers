@@ -199,6 +199,7 @@ static int sched_priority_random = 0;
 static int sched_alg = 0; /* Use ULE standard algorithm by default */
 static int sched_utilticks = 10000; /* Time for CPU Usage Averaging */
 static int sched_utilticksmax = 11000;
+static int sched_balancenum = 1; /* Max threads in balance_pair */
 
 
 
@@ -920,25 +921,67 @@ sched_balance_pair(struct tdq *high, struct tdq *low)
 {
 	int moved;
 	int cpu;
-
-	tdq_lock_pair(high, low);
+	
 	moved = 0;
-	/*
-	 * Determine what the imbalance is and then adjust that to how many
-	 * threads we actually have to give up (transferable).
-	 */
-	if (high->tdq_transferable != 0 && high->tdq_load > low->tdq_load &&
-	    (moved = tdq_move(high, low)) > 0) {
+	
+	/* ULE Standard Behavior. Move 1 thread. */
+	
+	if (sched_balancenum == 1) {
+	
+		tdq_lock_pair(high, low);
 		/*
-		 * In case the target isn't the current cpu IPI it to force a
-		 * reschedule with the new workload.
-		 */
-		cpu = TDQ_ID(low);
-		if (cpu != PCPU_GET(cpuid))
-			ipi_cpu(cpu, IPI_PREEMPT);
+		* Determine what the imbalance is and then adjust that to how many
+		* threads we actually have to give up (transferable).
+		*/
+	
+		if (high->tdq_transferable != 0 && high->tdq_load > low->tdq_load &&
+			(moved = tdq_move(high, low)) > 0) {
+			/*
+			* In case the target isn't the current cpu IPI it to force a
+			* reschedule with the new workload.
+			*/
+			cpu = TDQ_ID(low);
+			if (cpu != PCPU_GET(cpuid))
+				ipi_cpu(cpu, IPI_PREEMPT);
+		}
+		tdq_unlock_pair(high, low);
 	}
-	tdq_unlock_pair(high, low);
-	return (moved);
+	
+	/* DEBUG Sysctl tweaked. Move as many threads as specified. */
+
+	else {
+		TDQ_LOCK(high);
+		TDQ_LOCK_FLAGS(high, MTX_DUPOK);
+		while (moved < sched_balancenum ) {
+			
+			/* See if we have anything to migrate. */
+			
+			if (high->tdq_transferable != 0 && high->tdq_load > low->tdq_load) {
+				TDQ_LOCK(low);
+				TDQ_LOCK_FLAGS(low, MTX_DUPOK);
+				if ((moved = moved + tdq_move(high, low)) > 0) {
+					TDQ_UNLOCK(low);
+				}
+				else {
+					
+					/* We were unsuccessful. Nothing left to do. */
+					
+					TDQ_UNLOCK(low);
+					break;
+				}
+			}
+			else {
+				break;
+			}
+		}
+		TDQ_UNLOCK(high);
+		if (moved) {
+			cpu = TDQ_ID(low);
+			if (cpu != PCPU_GET(cpuid))
+				ipi_cpu(cpu, IPI_PREEMPT);
+		}
+	}
+	return(moved);
 }
 
 /*
@@ -2408,15 +2451,6 @@ sched_add(struct thread *td, int flags)
 	 * target cpu.
 	 */
 	switch (sched_alg) {
-	case 0:	
-		cpu = sched_pickcpu(td, flags);
-		tdq = sched_setcpu(td, cpu, flags);
-		tdq_add(tdq, td, flags);
-		if (cpu != PCPU_GET(cpuid)) {
-			tdq_notify(tdq, td);
-			return;
-		}
-		break;	
 	case 1: 
 		cpu = random() % mp_maxid;
 	 	tdq = sched_setcpu(td, cpu, flags);
@@ -2427,14 +2461,14 @@ sched_add(struct thread *td, int flags)
 		}	
 		break;
 	default: 
-                cpu = sched_pickcpu(td, flags);
-                tdq = sched_setcpu(td, cpu, flags);
-                tdq_add(tdq, td, flags);
-                if (cpu != PCPU_GET(cpuid)) {
-                        tdq_notify(tdq, td);
-                        return;
-                }
-                break;
+		cpu = sched_pickcpu(td, flags);
+        tdq = sched_setcpu(td, cpu, flags);
+        tdq_add(tdq, td, flags);
+			if (cpu != PCPU_GET(cpuid)) {
+				tdq_notify(tdq, td);
+                return;
+			}
+		break;
 	}	
 #else
 	tdq = TDQ_SELF();
@@ -2915,6 +2949,7 @@ SYSCTL_INT(_kern_sched, OID_AUTO, priority_random, CTLFLAG_RW, &sched_priority_r
 SYSCTL_INT(_kern_sched, OID_AUTO, algorithm, CTLFLAG_RW, &sched_alg, 0, "Scheduler Algorithm Selector");
 SYSCTL_INT(_kern_sched, OID_AUTO, utilticks, CTLFLAG_RW, &sched_utilticks, 0, "CPU Usage Calculation Interval in ticks"); 
 SYSCTL_INT(_kern_sched, OID_AUTO, utilticksmax, CTLFLAG_RW, &sched_utilticksmax, 0, "CPU Usage Maximum Calculation Interval in ticks");
+SYSCTL_INT(_kern_sched, OID_AUTO, tdbalancenum, CTLFLAG_RW, &sched_balancenum, 0, "Number of threads to attempt to balance with.");
 #ifdef SMP
 SYSCTL_INT(_kern_sched, OID_AUTO, affinity, CTLFLAG_RW, &affinity, 0,
     "Number of hz ticks to keep thread affinity for");
