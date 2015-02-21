@@ -1,5 +1,5 @@
 --- sys/kern/sched_ule.c	2015-02-19 07:59:27.626127250 -0800
-+++ sys/kern/sched_debug.c	2015-02-19 12:50:02.426836278 -0800
++++ sys/kern/sched_debug.c	2015-02-20 23:26:22.501581000 -0800
 @@ -1,4 +1,12 @@
  /*-
 + * Copyright (c) 2015, Harrison Grundy <harrison.grundy@astrodoggroup.com>
@@ -53,7 +53,7 @@
  
  #ifdef HWPMC_HOOKS
  #include <sys/pmckern.h>
-@@ -191,6 +193,12 @@
+@@ -191,6 +193,16 @@
  #define	SCHED_SLICE_DEFAULT_DIVISOR	10	/* ~94 ms, 12 stathz ticks. */
  #define	SCHED_SLICE_MIN_DIVISOR		6	/* DEFAULT/MIN = ~16 ms. */
  
@@ -61,12 +61,16 @@
 +static int sched_slice_maxticks = 12;
 +static int sched_priority_random = 0;
 +static int sched_alg = 0; /* Use ULE standard algorithm by default */
++static int sched_utilticks = 10000; /* Time for CPU Usage Averaging */
++static int sched_utilticksmax = 11000;
++static int sched_balancenum = 1; /* Max threads in balance_pair */
++
 +
 +
  /* Flags kept in td_flags. */
  #define	TDF_SLICEEND	TDF_SCHED2	/* Thread time slice is over. */
  
-@@ -578,11 +586,11 @@
+@@ -578,11 +590,11 @@
  	 * cannot be higher priority load in the system.
  	 */
  	load = tdq->tdq_sysload - 1;
@@ -82,7 +86,7 @@
  }
  
  /*
-@@ -861,14 +869,15 @@
+@@ -861,14 +873,15 @@
  {
  	struct tdq *tdq;
  
@@ -100,7 +104,91 @@
  	tdq = TDQ_SELF();
  	TDQ_UNLOCK(tdq);
  	sched_balance_group(cpu_top);
-@@ -1039,8 +1048,8 @@
+@@ -908,25 +921,67 @@
+ {
+ 	int moved;
+ 	int cpu;
+-
+-	tdq_lock_pair(high, low);
++	
+ 	moved = 0;
+-	/*
+-	 * Determine what the imbalance is and then adjust that to how many
+-	 * threads we actually have to give up (transferable).
+-	 */
+-	if (high->tdq_transferable != 0 && high->tdq_load > low->tdq_load &&
+-	    (moved = tdq_move(high, low)) > 0) {
++	
++	/* ULE Standard Behavior. Move 1 thread. */
++	
++	if (sched_balancenum == 1) {
++	
++		tdq_lock_pair(high, low);
+ 		/*
+-		 * In case the target isn't the current cpu IPI it to force a
+-		 * reschedule with the new workload.
+-		 */
+-		cpu = TDQ_ID(low);
+-		if (cpu != PCPU_GET(cpuid))
+-			ipi_cpu(cpu, IPI_PREEMPT);
++		* Determine what the imbalance is and then adjust that to how many
++		* threads we actually have to give up (transferable).
++		*/
++	
++		if (high->tdq_transferable != 0 && high->tdq_load > low->tdq_load &&
++			(moved = tdq_move(high, low)) > 0) {
++			/*
++			* In case the target isn't the current cpu IPI it to force a
++			* reschedule with the new workload.
++			*/
++			cpu = TDQ_ID(low);
++			if (cpu != PCPU_GET(cpuid))
++				ipi_cpu(cpu, IPI_PREEMPT);
++		}
++		tdq_unlock_pair(high, low);
+ 	}
+-	tdq_unlock_pair(high, low);
+-	return (moved);
++	
++	/* DEBUG Sysctl tweaked. Move as many threads as specified. */
++
++	else {
++		TDQ_LOCK(high);
++		TDQ_LOCK_FLAGS(high, MTX_DUPOK);
++		while (moved < sched_balancenum ) {
++			
++			/* See if we have anything to migrate. */
++			
++			if (high->tdq_transferable != 0 && high->tdq_load > low->tdq_load) {
++				TDQ_LOCK(low);
++				TDQ_LOCK_FLAGS(low, MTX_DUPOK);
++				if ((moved = moved + tdq_move(high, low)) > 0) {
++					TDQ_UNLOCK(low);
++				}
++				else {
++					
++					/* We were unsuccessful. Nothing left to do. */
++					
++					TDQ_UNLOCK(low);
++					break;
++				}
++			}
++			else {
++				break;
++			}
++		}
++		TDQ_UNLOCK(high);
++		if (moved) {
++			cpu = TDQ_ID(low);
++			if (cpu != PCPU_GET(cpuid))
++				ipi_cpu(cpu, IPI_PREEMPT);
++		}
++	}
++	return(moved);
+ }
+ 
+ /*
+@@ -1039,8 +1094,8 @@
  		return;
  
  	/*
@@ -111,7 +199,7 @@
  	 * accesses both of them without locks, and the order is important.
  	 */
  	mb();
-@@ -1084,11 +1093,11 @@
+@@ -1084,11 +1139,11 @@
  				continue;
  			rqh = &rq->rq_queues[bit + (i << RQB_L2BPW)];
  			TAILQ_FOREACH(td, rqh, td_runq) {
@@ -125,7 +213,7 @@
  		}
  	}
  	if (start != 0) {
-@@ -1499,6 +1508,9 @@
+@@ -1499,6 +1554,9 @@
  	 * considered interactive.
  	 */
  	score = imax(0, sched_interact_score(td) + td->td_proc->p_nice);
@@ -135,7 +223,26 @@
  	if (score < sched_interact) {
  		pri = PRI_MIN_INTERACT;
  		pri += ((PRI_MAX_INTERACT - PRI_MIN_INTERACT + 1) /
-@@ -2392,13 +2404,35 @@
+@@ -1629,13 +1687,13 @@
+ {
+ 	int t = ticks;
+ 
+-	if (t - ts->ts_ltick >= SCHED_TICK_TARG) {
++	if (t - ts->ts_ltick >= sched_utilticks) {
+ 		ts->ts_ticks = 0;
+-		ts->ts_ftick = t - SCHED_TICK_TARG;
+-	} else if (t - ts->ts_ftick >= SCHED_TICK_MAX) {
++		ts->ts_ftick = t - sched_utilticks;
++	} else if (t - ts->ts_ftick >= sched_utilticksmax) {
+ 		ts->ts_ticks = (ts->ts_ticks / (ts->ts_ltick - ts->ts_ftick)) *
+-		    (ts->ts_ltick - (t - SCHED_TICK_TARG));
+-		ts->ts_ftick = t - SCHED_TICK_TARG;
++		    (ts->ts_ltick - (t - sched_utilticks));
++		ts->ts_ftick = t - sched_utilticks;
+ 	}
+ 	if (run)
+ 		ts->ts_ticks += (t - ts->ts_ltick) << SCHED_TICK_SHIFT;
+@@ -2392,13 +2450,26 @@
  	 * Pick the destination cpu and if it isn't ours transfer to the
  	 * target cpu.
  	 */
@@ -147,15 +254,6 @@
 -		return;
 -	}
 +	switch (sched_alg) {
-+	case 0:	
-+		cpu = sched_pickcpu(td, flags);
-+		tdq = sched_setcpu(td, cpu, flags);
-+		tdq_add(tdq, td, flags);
-+		if (cpu != PCPU_GET(cpuid)) {
-+			tdq_notify(tdq, td);
-+			return;
-+		}
-+		break;	
 +	case 1: 
 +		cpu = random() % mp_maxid;
 +	 	tdq = sched_setcpu(td, cpu, flags);
@@ -166,19 +264,19 @@
 +		}	
 +		break;
 +	default: 
-+                cpu = sched_pickcpu(td, flags);
-+                tdq = sched_setcpu(td, cpu, flags);
-+                tdq_add(tdq, td, flags);
-+                if (cpu != PCPU_GET(cpuid)) {
-+                        tdq_notify(tdq, td);
-+                        return;
-+                }
-+                break;
++		cpu = sched_pickcpu(td, flags);
++        tdq = sched_setcpu(td, cpu, flags);
++        tdq_add(tdq, td, flags);
++			if (cpu != PCPU_GET(cpuid)) {
++				tdq_notify(tdq, td);
++                return;
++			}
++		break;
 +	}	
  #else
  	tdq = TDQ_SELF();
  	TDQ_LOCK(tdq);
-@@ -2510,20 +2544,16 @@
+@@ -2510,20 +2581,16 @@
  	ts = td->td_sched;
  	if (ts->ts_flags & TSF_BOUND)
  		sched_unbind(td);
@@ -207,7 +305,7 @@
  /*
   * Release a bound thread.
   */
-@@ -2856,7 +2886,7 @@
+@@ -2856,7 +2923,7 @@
  }
  
  SYSCTL_NODE(_kern, OID_AUTO, sched, CTLFLAG_RW, 0, "Scheduler");
@@ -216,7 +314,7 @@
      "Scheduler name");
  SYSCTL_PROC(_kern_sched, OID_AUTO, quantum, CTLTYPE_INT | CTLFLAG_RW,
      NULL, 0, sysctl_kern_quantum, "I",
-@@ -2875,6 +2905,11 @@
+@@ -2875,6 +2942,14 @@
  SYSCTL_INT(_kern_sched, OID_AUTO, idlespinthresh, CTLFLAG_RW,
      &sched_idlespinthresh, 0,
      "Threshold before we will permit idle thread spinning");
@@ -225,6 +323,9 @@
 +SYSCTL_INT(_kern_sched, OID_AUTO, minslice, CTLFLAG_RW, &sched_slice_minticks, 0, "Min Slice Size in Ticks");
 +SYSCTL_INT(_kern_sched, OID_AUTO, priority_random, CTLFLAG_RW, &sched_priority_random, 0, "Thread Priority Randomizer");
 +SYSCTL_INT(_kern_sched, OID_AUTO, algorithm, CTLFLAG_RW, &sched_alg, 0, "Scheduler Algorithm Selector");
++SYSCTL_INT(_kern_sched, OID_AUTO, utilticks, CTLFLAG_RW, &sched_utilticks, 0, "CPU Usage Calculation Interval in ticks"); 
++SYSCTL_INT(_kern_sched, OID_AUTO, utilticksmax, CTLFLAG_RW, &sched_utilticksmax, 0, "CPU Usage Maximum Calculation Interval in ticks");
++SYSCTL_INT(_kern_sched, OID_AUTO, tdbalancenum, CTLFLAG_RW, &sched_balancenum, 0, "Number of threads to attempt to balance with.");
  #ifdef SMP
  SYSCTL_INT(_kern_sched, OID_AUTO, affinity, CTLFLAG_RW, &affinity, 0,
      "Number of hz ticks to keep thread affinity for");
