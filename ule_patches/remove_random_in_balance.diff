@@ -1,7 +1,7 @@
-Index: sched_ule.c
+Index: sys/kern/sched_ule.c
 ===================================================================
---- sched_ule.c	(revision 278968)
-+++ sched_ule.c	(working copy)
+--- sys/kern/sched_ule.c	(revision 278968)
++++ sys/kern/sched_ule.c	(working copy)
 @@ -861,14 +861,15 @@
  {
  	struct tdq *tdq;
@@ -17,7 +17,7 @@ Index: sched_ule.c
 -	balance_ticks += random() % balance_interval;
 -	if (smp_started == 0 || rebalance == 0)
 -		return;
-+	balance_ticks += DPCPU_GET(hardclocktime) % balance_interval;
++	balance_ticks += get_cyclecount() % balance_interval;
  	tdq = TDQ_SELF();
  	TDQ_UNLOCK(tdq);
  	sched_balance_group(cpu_top);
