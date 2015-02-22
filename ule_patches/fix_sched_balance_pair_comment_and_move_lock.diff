@@ -13,7 +13,7 @@ Index: sys/kern/sched_ule.c
 +	 */
 +	
 +	if (high->tdq_load <= low->tdq_load)
-+		return(0)
++		return(0);
 +	
  	tdq_lock_pair(high, low);
  	moved = 0;
