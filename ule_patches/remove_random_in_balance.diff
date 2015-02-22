@@ -1,0 +1,23 @@
+Index: sched_ule.c
+===================================================================
+--- sched_ule.c	(revision 278968)
++++ sched_ule.c	(working copy)
+@@ -861,14 +861,15 @@
+ {
+ 	struct tdq *tdq;
+ 
++	if (smp_started == 0 || rebalance == 0)
++		return;
++
+ 	/*
+ 	 * Select a random time between .5 * balance_interval and
+ 	 * 1.5 * balance_interval.
+ 	 */
+ 	balance_ticks = max(balance_interval / 2, 1);
+-	balance_ticks += random() % balance_interval;
+-	if (smp_started == 0 || rebalance == 0)
+-		return;
++	balance_ticks += DPCPU_GET(hardclocktime) % balance_interval;
+ 	tdq = TDQ_SELF();
+ 	TDQ_UNLOCK(tdq);
+ 	sched_balance_group(cpu_top);
