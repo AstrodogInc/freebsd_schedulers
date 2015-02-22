@@ -1,0 +1,31 @@
+Index: sys/kern/sched_ule.c
+===================================================================
+--- sys/kern/sched_ule.c	(revision 278968)
++++ sys/kern/sched_ule.c	(working copy)
+@@ -908,15 +909,21 @@
+ {
+ 	int moved;
+ 	int cpu;
+-
++	
++	/* 
++	 * Don't bother to lock if balancing doesn't make sense.
++	 */
++	
++	if (high->tdq_load <= low->tdq_load)
++		return(0)
++	
+ 	tdq_lock_pair(high, low);
+ 	moved = 0;
+ 	/*
+-	 * Determine what the imbalance is and then adjust that to how many
+-	 * threads we actually have to give up (transferable).
++	 * Move one thread from high to low if high has atleast 1 
++	 * transferrable thread.
+ 	 */
+-	if (high->tdq_transferable != 0 && high->tdq_load > low->tdq_load &&
+-	    (moved = tdq_move(high, low)) > 0) {
++	if (high->tdq_transferable == 0 && (moved = tdq_move(high, low)) > 0) {
+ 		/*
+ 		 * In case the target isn't the current cpu IPI it to force a
+ 		 * reschedule with the new workload.
