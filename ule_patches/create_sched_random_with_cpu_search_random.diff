@@ -16,11 +16,11 @@ Index: sys/kern/sched_ule.c
   * Print the threads waiting on a run-queue.
   */
 +
-+static int sched_random()
++static int sched_random() 
 +{
 +        int rnd, *rndptr;
 +        rndptr = DPCPU_PTR(randomval);
-+        rnd = (*rndptr * 69069 + 5) >> 26;
++        rnd = (*rndptr = *rndptr * 69069 + 5) >> 26;
 +        return(rnd);
 +} 
 +
