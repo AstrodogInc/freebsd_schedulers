@@ -1,0 +1,69 @@
+Index: sys/kern/sched_ule.c
+===================================================================
+--- sys/kern/sched_ule.c	(revision 278968)
++++ sys/kern/sched_ule.c	(working copy)
+@@ -331,6 +331,8 @@
+     struct cpu_group *cg, int indent);
+ #endif
+ 
++static int sched_random();
++
+ static void sched_setup(void *dummy);
+ SYSINIT(sched_setup, SI_SUB_RUN_QUEUE, SI_ORDER_FIRST, sched_setup, NULL);
+ 
+@@ -359,6 +361,16 @@
+ /*
+  * Print the threads waiting on a run-queue.
+  */
++
++static int sched_random()
++{
++        int rnd, *rndptr;
++        rndptr = DPCPU_PTR(randomval);
++        rnd = (*rndptr * 69069 + 5) >> 26;
++        return(rnd);
++} 
++
++
+ static void
+ runq_print(struct runq *rq)
+ {
+@@ -651,7 +663,7 @@
+ 	cpuset_t cpumask;
+ 	struct cpu_group *child;
+ 	struct tdq *tdq;
+-	int cpu, i, hload, lload, load, total, rnd, *rndptr;
++	int cpu, i, hload, lload, load, total, rnd;
+ 
+ 	total = 0;
+ 	cpumask = cg->cg_mask;
+@@ -700,9 +712,8 @@
+ 			CPU_CLR(cpu, &cpumask);
+ 			tdq = TDQ_CPU(cpu);
+ 			load = tdq->tdq_load * 256;
+-			rndptr = DPCPU_PTR(randomval);
+-			rnd = (*rndptr = *rndptr * 69069 + 5) >> 26;
+-			if (match & CPU_SEARCH_LOWEST) {
++			rnd = sched_random();
++                        if (match & CPU_SEARCH_LOWEST) {
+ 				if (cpu == low->cs_prefer)
+ 					load -= 64;
+ 				/* If that CPU is allowed and get data. */
+@@ -861,14 +872,11 @@
+ {
+ 	struct tdq *tdq;
+ 
+-	/*
+-	 * Select a random time between .5 * balance_interval and
+-	 * 1.5 * balance_interval.
+-	 */
+-	balance_ticks = max(balance_interval / 2, 1);
+-	balance_ticks += random() % balance_interval;
+ 	if (smp_started == 0 || rebalance == 0)
+ 		return;
++
++	balance_ticks = max(balance_interval / 2, 1) +
++            (sched_random() % balance_interval);
+ 	tdq = TDQ_SELF();
+ 	TDQ_UNLOCK(tdq);
+ 	sched_balance_group(cpu_top);
